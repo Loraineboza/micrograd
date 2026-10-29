@@ -7,6 +7,33 @@ def _as_shape_tuple(shape):
     return tuple(shape)
 
 
+def _reduce_broadcast_grad(grad, target_shape):
+    """Reduce a gradient back to the shape of a broadcasted tensor.
+
+    This helper is used when one operand is a vector or scalar and is
+    broadcast to a larger array during an elementwise operation. The output
+    gradient is summed along axes that were introduced by broadcasting.
+    """
+    grad = np.asarray(grad, dtype=np.float64)
+    target_shape = tuple(target_shape)
+
+    if grad.shape == target_shape:
+        return grad
+
+    while grad.ndim > len(target_shape):
+        grad = grad.sum(axis=0)
+
+    if grad.ndim < len(target_shape):
+        pad = len(target_shape) - grad.ndim
+        grad = grad.reshape((1,) * pad + grad.shape)
+
+    for axis in range(len(target_shape)):
+        if target_shape[axis] == 1 and grad.shape[axis] != 1:
+            grad = grad.sum(axis=axis, keepdims=True)
+
+    return grad.reshape(target_shape)
+
+
 class Tensor:
     def __init__(self, data, requires_grad=True, name=None, parents=()):
         self.data = np.asarray(data, dtype=np.float64)
@@ -17,6 +44,10 @@ class Tensor:
         self.name = name or "tensor"
         self.op = ""
 
+    @property
+    def shape(self):
+        return self.data.shape
+
     @staticmethod
     def _ensure_tensor(value):
         if isinstance(value, Tensor):
@@ -25,20 +56,28 @@ class Tensor:
 
     def zero_grad(self):
         self.grad = np.zeros_like(self.data, dtype=np.float64)
+        for parent in self.parents:
+            if isinstance(parent, Tensor):
+                parent.zero_grad()
 
     def __repr__(self):
         return f"Tensor(name={self.name!r}, data={self.data}, grad={self.grad})"
 
     def __add__(self, other):
         other = self._ensure_tensor(other)
-        out = Tensor(self.data + other.data, requires_grad=self.requires_grad or other.requires_grad, name=f"{self.name}+{other.name}", parents=(self, other))
+        out = Tensor(
+            self.data + other.data,
+            requires_grad=self.requires_grad or other.requires_grad,
+            name=f"{self.name}+{other.name}",
+            parents=(self, other),
+        )
         out.op = "+"
 
         def backward():
             if self.requires_grad:
-                self.grad += out.grad
+                self.grad += _reduce_broadcast_grad(out.grad, self.data.shape)
             if other.requires_grad:
-                other.grad += out.grad
+                other.grad += _reduce_broadcast_grad(out.grad, other.data.shape)
 
         out._backward = backward
         return out
@@ -48,14 +87,19 @@ class Tensor:
 
     def __sub__(self, other):
         other = self._ensure_tensor(other)
-        out = Tensor(self.data - other.data, requires_grad=self.requires_grad or other.requires_grad, name=f"{self.name}-{other.name}", parents=(self, other))
+        out = Tensor(
+            self.data - other.data,
+            requires_grad=self.requires_grad or other.requires_grad,
+            name=f"{self.name}-{other.name}",
+            parents=(self, other),
+        )
         out.op = "-"
 
         def backward():
             if self.requires_grad:
-                self.grad += out.grad
+                self.grad += _reduce_broadcast_grad(out.grad, self.data.shape)
             if other.requires_grad:
-                other.grad -= out.grad
+                other.grad -= _reduce_broadcast_grad(out.grad, other.data.shape)
 
         out._backward = backward
         return out
@@ -65,14 +109,19 @@ class Tensor:
 
     def __mul__(self, other):
         other = self._ensure_tensor(other)
-        out = Tensor(self.data * other.data, requires_grad=self.requires_grad or other.requires_grad, name=f"{self.name}*{other.name}", parents=(self, other))
+        out = Tensor(
+            self.data * other.data,
+            requires_grad=self.requires_grad or other.requires_grad,
+            name=f"{self.name}*{other.name}",
+            parents=(self, other),
+        )
         out.op = "*"
 
         def backward():
             if self.requires_grad:
-                self.grad += other.data * out.grad
+                self.grad += _reduce_broadcast_grad(other.data * out.grad, self.data.shape)
             if other.requires_grad:
-                other.grad += self.data * out.grad
+                other.grad += _reduce_broadcast_grad(self.data * out.grad, other.data.shape)
 
         out._backward = backward
         return out
@@ -92,13 +141,24 @@ class Tensor:
     def __pow__(self, power):
         if not isinstance(power, (int, float, np.number)):
             power = self._ensure_tensor(power)
-            out = Tensor(self.data ** power.data, requires_grad=self.requires_grad or power.requires_grad, name=f"{self.name}**{power.name}", parents=(self, power))
+            out = Tensor(
+                self.data ** power.data,
+                requires_grad=self.requires_grad or power.requires_grad,
+                name=f"{self.name}**{power.name}",
+                parents=(self, power),
+            )
 
             def backward():
                 if self.requires_grad:
-                    self.grad += power.data * (self.data ** (power.data - 1)) * out.grad
+                    self.grad += _reduce_broadcast_grad(
+                        power.data * (self.data ** (power.data - 1)) * out.grad,
+                        self.data.shape,
+                    )
                 if power.requires_grad:
-                    power.grad += np.log(np.abs(self.data)) * out.grad * (self.data ** power.data)
+                    power.grad += _reduce_broadcast_grad(
+                        np.log(np.abs(self.data)) * out.grad * (self.data ** power.data),
+                        power.data.shape,
+                    )
 
             out._backward = backward
             return out
@@ -114,6 +174,10 @@ class Tensor:
 
     def __matmul__(self, other):
         other = self._ensure_tensor(other)
+        if self.data.ndim != 2 or other.data.ndim != 2:
+            raise ValueError(
+                f"Tensor.__matmul__ supports only 2D arrays; got shapes {self.data.shape} and {other.data.shape}."
+            )
         out = Tensor(self.data @ other.data, requires_grad=self.requires_grad or other.requires_grad, name=f"{self.name}@{other.name}", parents=(self, other))
         out.op = "@"
 
@@ -138,15 +202,22 @@ class Tensor:
             if not self.requires_grad:
                 return
             if axis is None:
-                grad = np.ones_like(self.data) * out.grad
+                grad = np.ones_like(self.data, dtype=np.float64) * out.grad
             else:
-                grad = np.expand_dims(out.grad, axis=axis) if not keepdims else out.grad
+                grad = np.asarray(out.grad, dtype=np.float64)
+                axes = sorted(_as_shape_tuple(axis), reverse=True)
                 if not keepdims:
                     shape = list(self.data.shape)
                     for ax in _as_shape_tuple(axis):
                         shape[ax] = 1
-                    grad = np.reshape(grad, shape)
-                grad = np.broadcast_to(grad, self.data.shape)
+                    grad = grad.reshape(shape)
+                for ax in axes:
+                    if keepdims:
+                        grad = np.expand_dims(grad, axis=ax)
+                if not keepdims:
+                    grad = np.broadcast_to(grad, self.data.shape)
+                else:
+                    grad = np.broadcast_to(grad, self.data.shape)
             self.grad += grad
 
         out._backward = backward
@@ -156,10 +227,8 @@ class Tensor:
         if axis is None:
             size = self.data.size
         else:
-            if isinstance(axis, (tuple, list)):
-                size = np.prod([self.data.shape[a] for a in axis])
-            else:
-                size = self.data.shape[axis]
+            axes = _as_shape_tuple(axis)
+            size = np.prod([self.data.shape[a] for a in axes], dtype=np.float64)
         out = Tensor(self.data.mean(axis=axis, keepdims=keepdims), requires_grad=self.requires_grad, name=f"mean({self.name})", parents=(self,))
         out.op = "mean"
 
@@ -281,16 +350,21 @@ class Tensor:
                 return
             visited.add(id(node))
             for parent in node.parents:
-                if parent is not None:
+                if isinstance(parent, Tensor):
                     dfs(parent)
             topo.append(node)
 
         dfs(self)
 
-        self.grad = np.ones_like(self.data, dtype=np.float64)
+        self.grad = self.grad + np.ones_like(self.data, dtype=np.float64)
+
         for node in reversed(topo):
             if node.requires_grad:
                 node._backward()
 
 
 __all__ = ["Tensor"]
+
+
+# NOTE: we intentionally keep the original API shape and behaviour, while making
+# broadcasting-aware gradient accumulation explicit and reproducible.
