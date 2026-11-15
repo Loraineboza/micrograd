@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 name = "micrograd-numpy"
 version = "0.1.0"
 description = "A small NumPy-based automatic differentiation library"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dependencies = [
     "numpy>=1.26,<3.0"
 ]

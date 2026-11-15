@@ -1,11 +1,4 @@
-"""Tests for scalar autograd operations, broadcasting and gradcheck.
-
-Assumes the project exposes `Tensor` from `micrograd.autograd` with:
-- Tensor(data), .data, .grad, .backward()
-- arithmetic +, *, @, sum(axis=...), mean(axis=...)
-If the actual public API differs, adapt the import/API in this file rather than changing
-the user's implementation blindly.
-"""
+"""Additional numerical and behavioral tests for the micrograd Tensor API."""
 from __future__ import annotations
 
 import numpy as np
@@ -158,13 +151,9 @@ def test_repeated_backward_behavior_is_explicit_and_does_not_corrupt_graph():
     loss.backward()
     second = as_grad(x).copy()
 
-    # Different engines intentionally choose either accumulation or reset semantics.
-    # This test accepts either behavior, but requires the second call to be finite and
-    # to follow one consistent policy: unchanged (reset) or exactly doubled (accumulate).
+    # This project explicitly uses accumulator semantics across backward() calls.
+    np.testing.assert_allclose(second, 2.0 * first, rtol=0, atol=1e-12)
     assert np.isfinite(second).all()
-    assert np.allclose(second, first) or np.allclose(second, 2.0 * first), (
-        f"Unexpected repeated-backward behavior: first={first}, second={second}"
-    )
 
 
 def test_gradcheck_reports_max_absolute_error():
