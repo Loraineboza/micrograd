@@ -86,3 +86,10 @@ def test_repeated_backward_does_not_reuse_intermediate_gradients():
     loss.backward()
     assert float(intermediate.grad[0]) == 1.0
     np.testing.assert_array_equal(x.grad, np.array([8.0]))
+
+
+def test_backward_on_leaf_root_accumulates_seed():
+    x = Tensor([2.0], name="x")
+    x.backward()
+    x.backward()
+    np.testing.assert_array_equal(x.grad, np.array([2.0]))
