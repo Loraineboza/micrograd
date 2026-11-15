@@ -378,8 +378,12 @@ class Tensor:
             if node.parents:
                 node.grad = np.zeros_like(node.data, dtype=np.float64)
 
-        # Seed this pass only after clearing intermediate buffers.
-        self.grad = np.ones_like(self.data, dtype=np.float64)
+        # A non-leaf root was cleared above; a leaf root is an accumulator.
+        root_seed = np.ones_like(self.data, dtype=np.float64)
+        if self.parents:
+            self.grad = root_seed
+        else:
+            self.grad += root_seed
 
         for node in reversed(topo):
             if node.requires_grad:
