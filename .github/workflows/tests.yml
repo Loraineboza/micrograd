@@ -18,3 +18,4 @@ jobs:
       - run: python -m pytest -q
       - run: python examples/gradcheck.py
       - run: python examples/linear_regression.py
+      - run: python test.py
