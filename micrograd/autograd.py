@@ -7,13 +7,27 @@ def _as_shape_tuple(shape):
     return tuple(shape)
 
 
-def _reduce_broadcast_grad(grad, target_shape):
-    """Reduce a gradient back to the shape of a broadcasted tensor.
+def _normalize_axes(axis, ndim):
+    if axis is None:
+        return ()
+    if isinstance(axis, (tuple, list)):
+        axes = tuple(axis)
+    else:
+        axes = (axis,)
 
-    This helper is used when one operand is a vector or scalar and is
-    broadcast to a larger array during an elementwise operation. The output
-    gradient is summed along axes that were introduced by broadcasting.
-    """
+    normalized = []
+    for ax in axes:
+        ax = int(ax)
+        if ax < 0:
+            ax += ndim
+        if ax < 0 or ax >= ndim:
+            raise ValueError(f"axis {ax} is out of bounds for array of dimension {ndim}")
+        normalized.append(ax)
+    return tuple(normalized)
+
+
+def _reduce_broadcast_grad(grad, target_shape):
+    """Reduce a gradient back to the shape of a broadcasted tensor."""
     grad = np.asarray(grad, dtype=np.float64)
     target_shape = tuple(target_shape)
 
@@ -201,24 +215,21 @@ class Tensor:
         def backward():
             if not self.requires_grad:
                 return
+
+            grad = np.asarray(out.grad, dtype=np.float64)
+
             if axis is None:
-                grad = np.ones_like(self.data, dtype=np.float64) * out.grad
-            else:
-                grad = np.asarray(out.grad, dtype=np.float64)
-                axes = sorted(_as_shape_tuple(axis), reverse=True)
-                if not keepdims:
-                    shape = list(self.data.shape)
-                    for ax in _as_shape_tuple(axis):
-                        shape[ax] = 1
-                    grad = grad.reshape(shape)
+                self.grad += np.ones_like(self.data, dtype=np.float64) * grad
+                return
+
+            axes = _normalize_axes(axis, self.data.ndim)
+            if not keepdims:
+                shape = list(self.data.shape)
                 for ax in axes:
-                    if keepdims:
-                        grad = np.expand_dims(grad, axis=ax)
-                if not keepdims:
-                    grad = np.broadcast_to(grad, self.data.shape)
-                else:
-                    grad = np.broadcast_to(grad, self.data.shape)
-            self.grad += grad
+                    shape[ax] = 1
+                grad = grad.reshape(shape)
+
+            self.grad += np.broadcast_to(grad, self.data.shape)
 
         out._backward = backward
         return out
@@ -227,26 +238,30 @@ class Tensor:
         if axis is None:
             size = self.data.size
         else:
-            axes = _as_shape_tuple(axis)
+            axes = _normalize_axes(axis, self.data.ndim)
             size = np.prod([self.data.shape[a] for a in axes], dtype=np.float64)
+
         out = Tensor(self.data.mean(axis=axis, keepdims=keepdims), requires_grad=self.requires_grad, name=f"mean({self.name})", parents=(self,))
         out.op = "mean"
 
         def backward():
             if not self.requires_grad:
                 return
-            grad = out.grad / size
+
+            grad = np.asarray(out.grad, dtype=np.float64) / size
+
             if axis is None:
-                self.grad += np.ones_like(self.data) * grad
-            else:
-                if keepdims:
-                    self.grad += np.broadcast_to(grad, self.data.shape)
-                else:
-                    shape = list(self.data.shape)
-                    for ax in _as_shape_tuple(axis):
-                        shape[ax] = 1
-                    grad = np.reshape(grad, shape)
-                    self.grad += np.broadcast_to(grad, self.data.shape)
+                self.grad += np.ones_like(self.data, dtype=np.float64) * grad
+                return
+
+            axes = _normalize_axes(axis, self.data.ndim)
+            if not keepdims:
+                shape = list(self.data.shape)
+                for ax in axes:
+                    shape[ax] = 1
+                grad = grad.reshape(shape)
+
+            self.grad += np.broadcast_to(grad, self.data.shape)
 
         out._backward = backward
         return out
@@ -356,7 +371,7 @@ class Tensor:
 
         dfs(self)
 
-        self.grad = self.grad + np.ones_like(self.data, dtype=np.float64)
+        self.grad = np.ones_like(self.data, dtype=np.float64)
 
         for node in reversed(topo):
             if node.requires_grad:
@@ -366,5 +381,5 @@ class Tensor:
 __all__ = ["Tensor"]
 
 
-# NOTE: we intentionally keep the original API shape and behaviour, while making
-# broadcasting-aware gradient accumulation explicit and reproducible.
+# NOTE: The retained API intentionally keeps accumulator-style gradients across repeated
+# backward() calls while resetting the root seed of each pass to ones.
