@@ -223,11 +223,12 @@ class Tensor:
                 return
 
             axes = _normalize_axes(axis, self.data.ndim)
-            if not keepdims:
-                shape = list(self.data.shape)
-                for ax in axes:
-                    shape[ax] = 1
-                grad = grad.reshape(shape)
+            # Reconstruct the reduced dimensions explicitly. This handles both
+            # keepdims modes, negative axes, and tuples of axes uniformly.
+            shape = list(self.data.shape)
+            for ax in axes:
+                shape[ax] = 1
+            grad = grad.reshape(shape)
 
             self.grad += np.broadcast_to(grad, self.data.shape)
 
@@ -371,6 +372,13 @@ class Tensor:
 
         dfs(self)
 
+        # Intermediate gradients are temporary values of this particular pass.
+        # Leaf gradients are accumulators and intentionally survive repeated calls.
+        for node in topo:
+            if node.parents:
+                node.grad = np.zeros_like(node.data, dtype=np.float64)
+
+        # Seed this pass only after clearing intermediate buffers.
         self.grad = np.ones_like(self.data, dtype=np.float64)
 
         for node in reversed(topo):
