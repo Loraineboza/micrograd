@@ -368,11 +368,15 @@ class Tensor:
                 if isinstance(parent, Tensor):
                     dfs(parent)
             topo.append(node)
-
+    
         dfs(self)
-
+    
+        for node in topo:
+            if node is not self and node.parents:
+                node.grad = np.zeros_like(node.data, dtype=np.float64)
+    
         self.grad = np.ones_like(self.data, dtype=np.float64)
-
+    
         for node in reversed(topo):
             if node.requires_grad:
                 node._backward()
