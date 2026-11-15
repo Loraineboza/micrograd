@@ -54,7 +54,7 @@
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+python -m pip install -e ".[test]"
 ```
 
 Запуск основного примера:
@@ -66,7 +66,13 @@ python examples/linear_regression.py
 Запуск тестов:
 
 ```bash
-pytest -q
+python -m pytest -q
+```
+
+Запуск численной проверки градиентов:
+
+```bash
+python examples/gradcheck_linear_regression.py
 ```
 
 ## Проверочный пример X @ W + b
